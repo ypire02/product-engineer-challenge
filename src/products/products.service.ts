@@ -91,23 +91,29 @@ export class ProductsService {
     return this.buildCategoryTree(category);
   }
 
-  private buildCategoryTree(category: Category): any {
-    const tree: any = {
-      id: category.id,
-      name: category.name,
-      children: [],
-    };
-
-    if (category.parentId) {
-      tree.parent = this.buildCategoryTree(category.parent);
-    }
-
-    if (category.children && category.children.length > 0) {
-      tree.children = category.children.map(child => this.buildCategoryTree(child));
-    }
-
-    return tree;
+  private buildCategoryTree(category: Category, visited = new Set<number>()): any {
+  if (visited.has(category.id)) {
+    return { id: category.id, name: category.name, children: [] };
   }
+  
+  visited.add(category.id);
+  
+  const tree: any = {
+    id: category.id,
+    name: category.name,
+    children: [],
+  };
+
+  if (category.parentId) {
+    tree.parent = this.buildCategoryTree(category.parent, visited);
+  }
+
+  if (category.children && category.children.length > 0) {
+    tree.children = category.children.map(child => this.buildCategoryTree(child, visited));
+  }
+
+  return tree;
+}
 
   async processProductBatch(productIds: number[]): Promise<{ success: boolean; processed: number }> {
     let processed = 0;

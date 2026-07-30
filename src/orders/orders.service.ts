@@ -86,7 +86,7 @@ export class OrdersService {
       
       await this.orderItemsRepository.save(orderItem);
       total += product.price * itemDto.quantity;
-      this.productsService.updateStock(product.id, product.stock - itemDto.quantity);
+      await this.productsService.updateStock(product.id, product.stock - itemDto.quantity);
     }
     
     savedOrder.total = total;
@@ -151,7 +151,7 @@ export class OrdersService {
 
     const enriched: any = { ...order };
     enriched.user = { ...order.user };
-    enriched.user.latestOrder = enriched;
+    //enriched.user.latestOrder = enriched;
 
     return JSON.parse(JSON.stringify(enriched));
   }

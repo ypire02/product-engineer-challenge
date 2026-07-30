@@ -9,14 +9,21 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { UsersService } from '../users/users.service';
 import { ProductsService } from '../products/products.service';
 
+const processedIdempotencyKeys = new Set<string>();
+
 const paymentService = {
-  async processPayment(orderId: number, amount: number): Promise<{ success: boolean; transactionId: string }> {
+  async processPayment(orderId: number, amount: number, idempotencyKey: string): Promise<{ success: boolean; transactionId: string }> {
     await new Promise(resolve => setTimeout(resolve, 100));
-    
+
     if (Math.random() < 0.1) {
       throw new Error('Payment service unavailable');
     }
-    
+
+    if (processedIdempotencyKeys.has(idempotencyKey)) {
+      return { success: true, transactionId: `TXN-${idempotencyKey}` };
+    }
+
+    processedIdempotencyKeys.add(idempotencyKey);
     return { success: true, transactionId: `TXN-${Date.now()}` };
   }
 };
@@ -103,12 +110,13 @@ export class OrdersService {
 
   async processPayment(orderId: number): Promise<{ success: boolean; transactionId: string }> {
     const order = await this.findOne(orderId);
-    
+    const idempotencyKey = `order-${orderId}-${order.total}`;
+
     let lastError: Error;
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        const result = await paymentService.processPayment(orderId, Number(order.total));
-        
+        const result = await paymentService.processPayment(orderId, Number(order.total), idempotencyKey);
+
         if (result.success) {
           order.status = OrderStatus.CONFIRMED;
           await this.ordersRepository.save(order);
@@ -119,7 +127,7 @@ export class OrdersService {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
-    
+
     throw lastError!;
   }
 

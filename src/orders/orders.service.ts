@@ -112,7 +112,7 @@ export class OrdersService {
     const order = await this.findOne(orderId);
     const idempotencyKey = `order-${orderId}-${order.total}`;
 
-    let lastError: Error;
+    let lastError: Error = new Error('Payment failed after all retries');
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
         const result = await paymentService.processPayment(orderId, Number(order.total), idempotencyKey);
@@ -123,12 +123,12 @@ export class OrdersService {
           return result;
         }
       } catch (error) {
-        lastError = error;
+        lastError = error instanceof Error ? error : new Error(String(error));
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
-    throw lastError!;
+    throw lastError;
   }
 
   async cancel(id: number): Promise<Order> {

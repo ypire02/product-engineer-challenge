@@ -23,16 +23,27 @@ const cacheKey = 'product-search';
 - Cache consistency broken
 
 **Solution:**
-Make cache key unique based on query:
+Normalize query input with unique cache key:
 
 ```typescript
-// ✅ AFTER - Dynamic cache key with query
+// ✅ AFTER - Dynamic cache key with normalized query
 const cacheKey = `product-search-${query.toLowerCase()}`;
 ```
 
+**What this does:**
+- `product-search-` = prefix (static part)
+- `${query.toLowerCase()}` = normalize user input to lowercase
+- Result: `product-search-laptop`, `product-search-phone`, etc.
+
+Example:
+- Search "Laptop" → cache key = `product-search-laptop`
+- Search "LAPTOP" → cache key = `product-search-laptop` (same)
+- Search "Phone" → cache key = `product-search-phone` (different)
+
 **How to test:**
-POST /products/search?q=gato → caches under `product-search-gato`
-POST /products/search?q=perro → caches under `product-search-perro`
+POST /products/search?q=Laptop → caches under `product-search-laptop`
+POST /products/search?q=LAPTOP → uses same cache `product-search-laptop`
+POST /products/search?q=Phone → caches under `product-search-phone`
 
 ---
 
@@ -110,23 +121,35 @@ Stock update not awaited → async operation not synchronized.
 ```typescript
 // ❌ BEFORE - Missing await
 this.productsService.updateStock(product.id, product.stock - itemDto.quantity);
+// Code continues immediately without waiting
 ```
 
 **Impact:**
-- Order created but stock not updated yet
+- Order created but stock not updated yet (still processing in background)
 - Race condition: multiple orders can oversell same product
-- Data inconsistency
+- Two users can create orders for the same stock simultaneously
+
+**Why `await` matters:**
+- **Without await:** "Update stock" → Don't wait → Order complete (stock still old value)
+- **With await:** "Update stock" → WAIT for it → THEN complete order (stock is new value)
 
 **Solution:**
-Add `await` to wait for completion:
+Add `await` to wait for stock update to complete:
 
 ```typescript
 // ✅ AFTER - Awaited async operation
 await this.productsService.updateStock(product.id, product.stock - itemDto.quantity);
+// Code only continues after stock is updated
+```
+
+**Real Example:**
+```
+With await: Stock 5 → Create order for 2 → Wait → Stock becomes 3 → Order completes
+Without await: Stock 5 → Create order 1 for 2 → Don't wait → Create order 2 for 3 (both see 5!)
 ```
 
 **How to test:**
-POST /orders → Product stock decrements before order completes
+POST /orders with 2 items → Verify product stock decrements correctly before response
 
 ---
 
@@ -135,34 +158,46 @@ POST /orders → Product stock decrements before order completes
 **File:** `src/orders/orders.service.ts` (line 154)
 
 **Problem:**
-Creating circular reference in object graph breaks JSON serialization.
+Creating circular reference creates an infinite loop that JSON can't serialize.
+
+**The cycle:**
+```
+Order → User → Order → User → Order...
+When does it end? NEVER. It repeats infinitely.
+```
 
 ```typescript
 // ❌ BEFORE - Circular reference
 const enriched: any = { ...order };
 enriched.user = { ...order.user };
-enriched.user.latestOrder = enriched;  // ← Creates cycle
-return JSON.parse(JSON.stringify(enriched));  // ← Fails or hangs
+enriched.user.latestOrder = enriched;  // ← User points back to order
+return JSON.stringify(enriched);       // ← Tries to write infinitely
 ```
 
 **Impact:**
-- GET /orders/:id/full → JSON.stringify fails silently
-- Unexpected behavior, difficult to debug
-- Crashes or hangs serialization
+- JSON tries to write: Order → User → Order → User → ...
+- Gets stuck in infinite loop writing
+- Server freezes or returns error
+- GET /orders/:id/full doesn't work
 
 **Solution:**
-Remove circular reference:
+Remove the line that creates the cycle:
 
 ```typescript
-// ✅ AFTER - No circular reference
+// ✅ AFTER - No cycle
 const enriched: any = { ...order };
 enriched.user = { ...order.user };
 // enriched.user.latestOrder = enriched;  // ← Removed
-return JSON.parse(JSON.stringify(enriched));  // ← Works fine
+return JSON.stringify(enriched);  // ← Works perfectly
 ```
 
+**What changed:**
+- Removed line that made user point back to order
+- Now: Order → User (STOP)
+- JSON can serialize without getting stuck
+
 **How to test:**
-GET /orders/:id/full → Returns JSON without hanging
+GET /orders/:id/full → Returns valid JSON instantly
 
 ---
 
@@ -171,36 +206,29 @@ GET /orders/:id/full → Returns JSON without hanging
 **File:** `src/products/products.service.ts` (lines 94-110)
 
 **Problem:**
-Recursive function has no protection against circular references in category hierarchy.
+Function builds a category tree by exploring: category → parent → grandparent → etc.
 
-```typescript
-// ❌ BEFORE - No cycle detection
-private buildCategoryTree(category: Category): any {
-  const tree: any = {
-    id: category.id,
-    name: category.name,
-    children: [],
-  };
+But if there's a DATABASE ERROR where a category points to itself, the function gets trapped:
 
-  if (category.parentId) {
-    tree.parent = this.buildCategoryTree(category.parent);  // ← Can infinite loop
-  }
-
-  if (category.children && category.children.length > 0) {
-    tree.children = category.children.map(child => this.buildCategoryTree(child));
-  }
-
-  return tree;
-}
+**Example - Database Error:**
+```
+Correct: Flooring (id: 1, parentId: null) → Laminate (id: 2, parentId: 1)
+Error:   Flooring (id: 1, parentId: 1) ❌ Its parent is itself!
 ```
 
-**Impact:**
-- If category A → parent is category B, and B → parent is A
-- Stack overflow / Maximum call stack size exceeded
-- GET /categories/:id/tree crashes
+**The infinite cycle:**
+```
+Process: Flooring (id: 1)
+  ↓ Has parent: id 1
+Process: Flooring (id: 1)
+  ↓ Has parent: id 1
+Process: Flooring (id: 1)
+  ↓ Has parent: id 1
+... (never ends, server runs out of memory)
+```
 
 **Solution:**
-Add `visited` Set to track visited categories:
+Track visited categories with a `Set` to detect cycles:
 
 ```typescript
 // ✅ AFTER - Cycle detection
@@ -229,8 +257,22 @@ private buildCategoryTree(category: Category, visited = new Set<number>()): any 
 }
 ```
 
+**What each line does:**
+- `if (visited.has(category.id))` → "Already processed this category?"
+- `visited.add(category.id)` → Mark as processed, add to set
+- `this.buildCategoryTree(category.parent, visited)` → Pass `visited` to parent
+- Result: When cycle is detected → stops, doesn't continue
+
+**Example with fix:**
+```
+Process: Flooring (id: 1) - add to visited
+  ↓ Has parent: id 1
+Check: "Is 1 in visited?" YES
+  ↓ STOP - return simple object, don't continue
+```
+
 **How to test:**
-GET /categories/:id/tree → Works even with circular parent-child relationships
+GET /categories/:id/tree → Works even if database has circular references
 
 ---
 

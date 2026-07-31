@@ -192,7 +192,9 @@ return JSON.stringify(enriched);  // ← Works perfectly
 ```
 
 **What changed:**
-- Removed line that made user point back to order
+- Removed the line that created a cycle (it wasn't needed)
+- This line tried to link the user back to their order
+- But it caused an infinite loop, so removing it was the right call
 - Now: Order → User (STOP)
 - JSON can serialize without getting stuck
 
